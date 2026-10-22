@@ -202,39 +202,6 @@ public class RecentsHook {
                         // This hook deliberately does NOT add any offset: the launcher calls it
                         // every frame and accumulating a delta here is what produced the jitter.
                         
-                        // --- DIAGNOSTIC: dump TaskView structure + offset values ---
-                        try {
-                            float offv = extra == null ? 0f : extra;
-                            if (Math.abs(offv) > 0.01f) {
-                                Object lastObj = XposedHelpers.getAdditionalInstanceField(child, "astep_last_log");
-                                long now = SystemClock.uptimeMillis();
-                                boolean due = !(lastObj instanceof Long) || now - (Long) lastObj >= 120L;
-                                if (due) {
-                                XposedHelpers.setAdditionalInstanceField(child, "astep_last_log", now);
-                                StringBuilder sb = new StringBuilder();
-                                sb.append("applyTX tv=").append(System.identityHashCode(child))
-                                  .append(" off=").append(String.format("%.1f", extra))
-                                  .append(" tx=").append(String.format("%.1f", child.getTranslationX()))
-                                  .append(" left=").append(child.getLeft())
-                                  .append(" scrollX=").append(child.getScrollX())
-                                  .append(" | kids=");
-                                if (child instanceof ViewGroup) {
-                                    ViewGroup vg = (ViewGroup) child;
-                                    for (int i = 0; i < vg.getChildCount(); i++) {
-                                        View sub = vg.getChildAt(i);
-                                        if (sub == null) continue;
-                                        sb.append("[").append(i).append(":")
-                                          .append(sub.getClass().getSimpleName())
-                                          .append(" id=").append(sub.getId())
-                                          .append(" tx=").append(String.format("%.1f", sub.getTranslationX()))
-                                          .append(" l=").append(sub.getLeft())
-                                          .append("] ");
-                                    }
-                                }
-                                Log.i("AStack", sb.toString());
-                                }
-                            }
-                        } catch (Throwable ignored) {}
                         
                         // IMPORTANT: When a task is being dismissed, Launcher applies its own 'dismissTranslationX'.
                         // We counteract it because we handle the gap-filling ourselves via physical linkage.
