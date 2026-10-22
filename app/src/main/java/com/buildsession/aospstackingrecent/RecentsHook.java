@@ -456,6 +456,34 @@ public class RecentsHook {
 
             float center = scroll + measuredSize / 2f;
             
+            // --- DIAGNOSTIC: verify coordinate space ---
+            try {
+                long nowC = SystemClock.uptimeMillis();
+                Object lastC = XposedHelpers.getAdditionalInstanceField(recentsView, "astep_coord_log");
+                if (!(lastC instanceof Long) || nowC - (Long) lastC >= 300L) {
+                    XposedHelpers.setAdditionalInstanceField(recentsView, "astep_coord_log", nowC);
+                    StringBuilder csb = new StringBuilder("COORD scroll=" + scroll
+                            + " measuredSize=" + measuredSize
+                            + " center=" + String.format("%.1f", center) + " | ");
+                    for (int ci = 0; ci < recentsView.getChildCount(); ci++) {
+                        View cv = recentsView.getChildAt(ci);
+                        if (cv == null || !taskViewClass.isInstance(cv)) continue;
+                        int cStart = (int) getChildStartMethod.invoke(handler, cv);
+                        int cSize = (int) getMeasuredSizeMethod.invoke(handler, cv);
+                        float cCenter = cStart + cSize / 2f;
+                        csb.append("[i=").append(ci)
+                           .append(" start=").append(cStart)
+                           .append(" size=").append(cSize)
+                           .append(" center=").append(String.format("%.0f", cCenter))
+                           .append(" dist=").append(String.format("%.0f", cCenter - center))
+                           .append(" left=").append(cv.getLeft())
+                           .append(" tx=").append(String.format("%.0f", cv.getTranslationX()))
+                           .append("] ");
+                    }
+                    Log.i("AStack", csb.toString());
+                }
+            } catch (Throwable ignored) {}
+            
             // Physics Linkage Fallback:
             // When entering from an app, scroll is often 0 initially while the 'Running Task' 
             // is actually the primary focus. We use the running task's logical center 
