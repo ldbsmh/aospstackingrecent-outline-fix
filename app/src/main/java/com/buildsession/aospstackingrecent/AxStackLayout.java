@@ -12,12 +12,9 @@ final class AxStackLayout {
     private static final float ABOVE_TASK_GAP_FACTOR = 0.076f;
     private static final float SCALE_STEP = 0.07f;
     private static final float MAX_STACK_RANGE = 4.5f;
-    private static final float PORTRAIT_STACK_SPACING_FACTOR = 0.23f;
     private static final float TASK_ALPHA_MIN = 0.75f;
     private static final float TASK_ALPHA_MAX = 1.0f;
     private static final float TASK_ALPHA_STEP = 0.06f;
-    private static final float MENU_START_DISTANCE = 0.7f;
-    private static final float MENU_SLOPE = 0.5f;
     private static final float MENU_FULL_ALPHA_DISTANCE = 0.28f;
     private static final float MENU_ZERO_ALPHA_DISTANCE = 0.72f;
     private static final float DECELERATE_70 = 0.7f;
@@ -26,7 +23,7 @@ final class AxStackLayout {
         return distance >= -TASK_PRELOAD_RANGE && distance <= 4f;
     }
 
-    float getTaskAlpha(float distance, boolean naturalLayout) {
+    static float getTaskAlpha(float distance, boolean naturalLayout) {
         if (distance <= 2.5f) {
             return 1f;
         }
@@ -36,7 +33,7 @@ final class AxStackLayout {
         return 1f - (distance - 2.5f);
     }
 
-    private float getMenuAlpha(float distance) {
+    private static float getMenuAlpha(float distance) {
         float absoluteDistance = Math.abs(distance);
         if (absoluteDistance <= MENU_FULL_ALPHA_DISTANCE) {
             return 1f;
@@ -70,32 +67,17 @@ final class AxStackLayout {
         }
     }
 
-    /** Static entry point used by the hook: mirrors getTransform() but returns a result object. */
+    /** Static entry point used by the hook. Delegates to the verbatim AxStack transform. */
     public static Transform compute(float distance, float normalDelta, float pageDistance,
             float primarySize) {
         if (distance < -TASK_PRELOAD_RANGE || distance > MAX_STACK_RANGE) return null;
-
         Transform out = new Transform();
-        if (distance <= 0f) {
-            float aboveGap = primarySize * ABOVE_TASK_GAP_FACTOR;
-            float totalTranslation = -distance * aboveGap;
-            out.set(getAboveTaskScale(distance), totalTranslation, 1f, 0f);
-            out.rank = -distance;
-            return out;
-        }
-        float stackSpacing = getStackSpacingStatic(primarySize);
-        float desiredDelta = distance * stackSpacing;
-        out.set(getStackScaleStatic(distance), desiredDelta - normalDelta,
-                getTaskAlphaStatic(distance), getMenuAlpha(distance));
-        out.rank = 0f;
+        getTransform(distance, normalDelta, 0f, distance, primarySize, true, false, out);
+        out.rank = distance <= 0f ? -distance : 0f;
         return out;
     }
 
-    private static float getStackSpacingStatic(float primarySize) {
-        return primarySize * PORTRAIT_STACK_SPACING_FACTOR;
-    }
-
-    private float getTransform(float distance, float normalDelta, float reflowTranslation,
+    private static float getTransform(float distance, float normalDelta, float reflowTranslation,
             float anchorDistance, float primarySize, boolean naturalLayout, boolean rtl,
             Transform out) {
         if (distance < -TASK_PRELOAD_RANGE || distance > 4.5f) {
@@ -124,7 +106,7 @@ final class AxStackLayout {
         out.set(scale, rtl ? -translation : translation, alpha, getMenuAlpha(distance));
     }
 
-    private float getStackSpacing(float primarySize, boolean naturalLayout) {
+    private static float getStackSpacing(float primarySize, boolean naturalLayout) {
         float factor = naturalLayout ? PORTRAIT_STACK_SPACING_FACTOR : LANDSCAPE_STACK_SPACING_FACTOR;
         return primarySize * factor;
     }
@@ -136,7 +118,7 @@ final class AxStackLayout {
         return Math.max(0f, 1f - distance / 3.0f);
     }
 
-    private float getStackScale(float distance, boolean naturalLayout) {
+    private static float getStackScale(float distance, boolean naturalLayout) {
         if (distance <= 0f) {
             return 1f;
         }
@@ -144,7 +126,7 @@ final class AxStackLayout {
         return Math.max(0.75f, 1f - distance * step);
     }
 
-    private float getAboveTaskScale(float distance) {
+    private static float getAboveTaskScale(float distance) {
         if (distance >= 0f) {
             return 1f;
         }
@@ -152,22 +134,6 @@ final class AxStackLayout {
         return Math.max(0.85f, 1f - (-distance) * 0.02f);
     }
 
-    private static float getStackScaleStatic(float distance) {
-        if (distance <= 0f) return 1f;
-        return Math.max(0.75f, 1f - distance * SCALE_STEP);
-    }
 
-    private static float getTaskAlphaStatic(float distance) {
-        if (distance <= 0f) return 1f;
-        return Math.max(TASK_ALPHA_MIN, TASK_ALPHA_MAX - distance * TASK_ALPHA_STEP);
-    }
 
-    private static float getMenuAlpha(float distance) {
-        if (distance <= 0f) return 0f;
-        return Math.max(0f, Math.min(1f, (distance - MENU_START_DISTANCE) / MENU_SLOPE));
-    }
-
-    private float getMenuAlphaInstance(float distance) {
-        return getMenuAlpha(distance);
-    }
 }
