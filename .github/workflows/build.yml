@@ -17,15 +17,18 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Show Gradle version
-        run: gradle --version
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Grant execute permission
+        run: chmod +x gradlew
 
       - name: Build release APK
-        run: gradle :app:assembleRelease --no-daemon --stacktrace
+        run: ./gradlew :app:assembleRelease --stacktrace
 
       - name: List outputs
         if: always()
-        run: find . -path ./\.gradle -prune -o -name '*.apk' -print || true
+        run: find app/build/outputs -type f || true
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
