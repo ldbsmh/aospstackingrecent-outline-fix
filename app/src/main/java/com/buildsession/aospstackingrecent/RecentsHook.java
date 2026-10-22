@@ -112,6 +112,13 @@ public class RecentsHook {
                          float deltaFactor = spacingFactor - DEFAULT_SPACING;
                          int deltaPx = Math.round(deltaFactor * 10f);
                          param.setResult(original + deltaPx - 120);
+                         // --- DIAGNOSTIC ---
+                         try {
+                             Log.i("AStack", "PAGESPACING original=" + original
+                                     + " factor=" + spacingFactor
+                                     + " delta=" + deltaPx
+                                     + " result=" + (original + deltaPx - 120));
+                         } catch (Throwable ignored) {}
                      }
                  });
                  XposedBridge.log("AOSPStackingRecent: Hooked getPageSpacing");
