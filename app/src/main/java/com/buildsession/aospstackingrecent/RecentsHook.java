@@ -191,11 +191,43 @@ public class RecentsHook {
                         // many Launcher versions don't actually call getOffsetAdjustment() 
                         // inside their applyTranslationX() implementation for the visual update.
                         Float extra = (Float) XposedHelpers.getAdditionalInstanceField(child, "apple_stack_offset");
-                        float appliedExtra = 0f;
                         if (extra != null && extra != 0f) {
                             child.setTranslationX(child.getTranslationX() + extra);
-                            appliedExtra = extra;
                         }
+                        
+                        // --- DIAGNOSTIC: dump TaskView structure + offset values ---
+                        try {
+                            float offv = extra == null ? 0f : extra;
+                            if (Math.abs(offv) > 0.01f) {
+                                Object lastObj = XposedHelpers.getAdditionalInstanceField(child, "astep_last_log");
+                                long now = SystemClock.uptimeMillis();
+                                boolean due = !(lastObj instanceof Long) || now - (Long) lastObj >= 120L;
+                                if (due) {
+                                XposedHelpers.setAdditionalInstanceField(child, "astep_last_log", now);
+                                StringBuilder sb = new StringBuilder();
+                                sb.append("applyTX tv=").append(System.identityHashCode(child))
+                                  .append(" off=").append(String.format("%.1f", extra))
+                                  .append(" tx=").append(String.format("%.1f", child.getTranslationX()))
+                                  .append(" left=").append(child.getLeft())
+                                  .append(" scrollX=").append(child.getScrollX())
+                                  .append(" | kids=");
+                                if (child instanceof ViewGroup) {
+                                    ViewGroup vg = (ViewGroup) child;
+                                    for (int i = 0; i < vg.getChildCount(); i++) {
+                                        View sub = vg.getChildAt(i);
+                                        if (sub == null) continue;
+                                        sb.append("[").append(i).append(":")
+                                          .append(sub.getClass().getSimpleName())
+                                          .append(" id=").append(sub.getId())
+                                          .append(" tx=").append(String.format("%.1f", sub.getTranslationX()))
+                                          .append(" l=").append(sub.getLeft())
+                                          .append("] ");
+                                    }
+                                }
+                                Log.i("AStack", sb.toString());
+                                }
+                            }
+                        } catch (Throwable ignored) {}
                         
                         // IMPORTANT: When a task is being dismissed, Launcher applies its own 'dismissTranslationX'.
                         // We counteract it because we handle the gap-filling ourselves via physical linkage.
@@ -204,31 +236,8 @@ public class RecentsHook {
                                 float dismissTx = dismissTranslationXField.getFloat(child);
                                 if (Math.abs(dismissTx) > 0.1f) {
                                     child.setTranslationX(child.getTranslationX() - dismissTx);
-                                    appliedExtra -= dismissTx;
                                 }
                             } catch (Throwable ignored) {}
-                        }
-                        
-                        // FIX: translationX only moves the TaskView's content layer. The semi-transparent
-                        // outline/background behind a card is drawn from the View's unscrolled bounds,
-                        // so it stays put while the card slides -> visible horizontal misalignment
-                        // (especially when swiping right, where the offsets don't cancel out).
-                        // Push every child view by the same delta so the outline travels with the card.
-                        if (Math.abs(appliedExtra) > 0.01f && child instanceof android.view.ViewGroup) {
-                            android.view.ViewGroup vg = (android.view.ViewGroup) child;
-                            int n = vg.getChildCount();
-                            for (int i = 0; i < n; i++) {
-                                android.view.View sub = vg.getChildAt(i);
-                                if (sub == null) continue;
-                                // Only touch the outline/background layers, never the task thumbnail
-                                // or the icon, which already follow the content translation.
-                                String cls = sub.getClass().getName();
-                                if (cls.contains("Snapshot") || cls.contains("Thumbnail")
-                                        || cls.contains("IconView") || cls.contains("DoubleShadow")) {
-                                    continue;
-                                }
-                                sub.setTranslationX(appliedExtra);
-                            }
                         }
                     }
                 });
@@ -278,6 +287,43 @@ public class RecentsHook {
             }
 
             XposedBridge.hookAllMethods(recentsViewClass, "dispatchDraw", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                    // --- DIAGNOSTIC: dump the full hierarchy once per settle ---
+                    try {
+                        ViewGroup rv = (ViewGroup) param.thisObject;
+                        long nowH = SystemClock.uptimeMillis();
+                        Object lastH = XposedHelpers.getAdditionalInstanceField(rv, "astep_tree_log");
+                        if (!(lastH instanceof Long) || nowH - (Long) lastH >= 1500L) {
+                            XposedHelpers.setAdditionalInstanceField(rv, "astep_tree_log", nowH);
+                            Log.i("AStack", "==== TREE ====");
+                            dumpTree(rv, 0);
+                        }
+                    } catch (Throwable ignored) {}
+                    // --- DIAGNOSTIC: who is in the scrollable container, and their real positions ---
+                    try {
+                        ViewGroup rv = (ViewGroup) param.thisObject;
+                        long nowD = SystemClock.uptimeMillis();
+                        Object lastD = XposedHelpers.getAdditionalInstanceField(rv, "astep_last_draw_log");
+                        boolean dueD = !(lastD instanceof Long) || nowD - (Long) lastD >= 120L;
+                        if (dueD) {
+                        XposedHelpers.setAdditionalInstanceField(rv, "astep_last_draw_log", nowD);
+                        StringBuilder sb = new StringBuilder("RecentsView kids=" + rv.getChildCount()
+                                + " scrollX=" + rv.getScrollX() + " | ");
+                        for (int i = 0; i < rv.getChildCount(); i++) {
+                            View c = rv.getChildAt(i);
+                            if (c == null) continue;
+                            sb.append("[").append(i).append(":")
+                              .append(c.getClass().getSimpleName())
+                              .append(" l=").append(c.getLeft())
+                              .append(" tx=").append(String.format("%.1f", c.getTranslationX()))
+                              .append(" sx=").append(c.getScrollX())
+                              .append("] ");
+                        }
+                        Log.i("AStack", sb.toString());
+                        }
+                    } catch (Throwable ignored) {}
+                }
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                     try {
@@ -359,6 +405,30 @@ public class RecentsHook {
     private float lastSpacingFactor = -1;
     private float lastTightnessFactor = -1;
     private long lastDismissHookLogUptime;
+
+    private void dumpTree(View v, int depth) {
+        try {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < depth; i++) sb.append("  ");
+            sb.append(v.getClass().getSimpleName())
+              .append(" x=").append(String.format("%.1f", v.getX()))
+              .append(" y=").append(String.format("%.1f", v.getY()))
+              .append(" w=").append(v.getWidth()).append(" h=").append(v.getHeight())
+              .append(" tx=").append(String.format("%.1f", v.getTranslationX()))
+              .append(" a=").append(String.format("%.2f", v.getAlpha()));
+            if (v.getBackground() != null) {
+                sb.append(" bg=").append(v.getBackground().getClass().getSimpleName());
+            }
+            Log.i("AStack", sb.toString());
+            if (depth < 6 && v instanceof ViewGroup) {
+                ViewGroup g = (ViewGroup) v;
+                for (int i = 0; i < g.getChildCount(); i++) {
+                    View c = g.getChildAt(i);
+                    if (c != null) dumpTree(c, depth + 1);
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
 
     private void handleUpdateCurveProperties(XC_MethodHook.MethodHookParam param) {
         ViewGroup recentsView = (ViewGroup) param.thisObject;
