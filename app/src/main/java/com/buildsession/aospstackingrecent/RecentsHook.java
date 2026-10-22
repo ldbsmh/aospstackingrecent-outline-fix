@@ -198,15 +198,9 @@ public class RecentsHook {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                         View child = (View) param.thisObject;
-                        
-                        // We restore the manual addition of apple_stack_offset here.
-                        // While getOffsetAdjustment hook handles logic/snapping, 
-                        // many Launcher versions don't actually call getOffsetAdjustment() 
-                        // inside their applyTranslationX() implementation for the visual update.
-                        Float extra = (Float) XposedHelpers.getAdditionalInstanceField(child, "apple_stack_offset");
-                        if (extra != null && extra != 0f) {
-                            child.setTranslationX(child.getTranslationX() + extra);
-                        }
+                        // The stack position is applied absolutely by getOffsetAdjustment().
+                        // This hook deliberately does NOT add any offset: the launcher calls it
+                        // every frame and accumulating a delta here is what produced the jitter.
                         
                         // --- DIAGNOSTIC: dump TaskView structure + offset values ---
                         try {
@@ -583,196 +577,75 @@ public class RecentsHook {
                 havePageRef = false;
             }
 
-            // First pass: Calculate distance and weights for all cards
-            for (int i = 0; i < childCount; i++) {
-                View child = recentsView.getChildAt(i);
-                if (child == null || !taskViewClass.isInstance(child)) continue;
-
-                int childStart = (int) getChildStartMethod.invoke(handler, child);
-                int childSize = (int) getMeasuredSizeMethod.invoke(handler, child);
-                float childCenter = childStart + childSize / 2f;
-                float pixelDelta = havePageRef
-                        ? (childStart - pageStartRef)
-                        : (childCenter - center);
-
-                // Normalise to PAGE INDEX, the way AxStack's AxStackLayout does it:
-                //     distance = pixelDelta / pageDistance
-                // Working in raw pixels is what produced the ghost card: page 10 came out as
-                // -10040px and no stack curve can pull that back onto the screen.
-                float pageDistance = Math.max(1f, childSize + pageSpacing);
-                float distance = pixelDelta / pageDistance;
-                float absDistance = Math.abs(distance);
-
-                XposedHelpers.setAdditionalInstanceField(child, "apple_stack_distance", distance);
-                XposedHelpers.setAdditionalInstanceField(child, "apple_stack_abs_distance", absDistance);
-                XposedHelpers.setAdditionalInstanceField(child, "apple_stack_pixel_delta", pixelDelta);
-                XposedHelpers.setAdditionalInstanceField(child, "apple_stack_page_distance", pageDistance);
-
-                // Calculate dismiss progress from both manual drag (translationY) and auto animation (alpha)
-                float transY = Math.abs(child.getTranslationY());
-                // Use 35% of height as the point where the card is "fully gone" from layout perspective
-                float dismissThreshold = child.getHeight() * 0.35f;
-                float dragProgress = clamp(transY / dismissThreshold, 0f, 1f);
-                float alphaProgress = clamp(1.0f - child.getAlpha(), 0f, 1f);
-                
-                // Total progress is the maximum of drag and alpha animations
-                float totalProgress = Math.max(dragProgress, alphaProgress);
-                XposedHelpers.setAdditionalInstanceField(child, "apple_dismiss_progress", totalProgress);
-                
-                // If it's completely gone, weight is 0. Otherwise, it's 1.0 -> 0.0
-                float weight = (child.getVisibility() != View.VISIBLE || child.getAlpha() < 0.05f) ? 0f : (1.0f - totalProgress);
-                XposedHelpers.setAdditionalInstanceField(child, "apple_layout_weight", weight);
+            // === AxStack layout ported verbatim from AxStackLayout.getTransform() ===
+            // Measure the page pitch (card-to-card distance) once.
+            float pageDistance = 0f;
+            {
+                float s0 = Float.NaN, s1 = Float.NaN;
+                int seen = 0;
+                for (int k = 0; k < childCount && seen < 2; k++) {
+                    View cv = recentsView.getChildAt(k);
+                    if (cv == null || !taskViewClass.isInstance(cv)) continue;
+                    float s = (int) getChildStartMethod.invoke(handler, cv);
+                    if (seen == 0) s0 = s; else s1 = s;
+                    seen++;
+                }
+                if (!Float.isNaN(s1)) pageDistance = Math.abs(s1 - s0);
+                if (pageDistance <= 0f) pageDistance = measuredSize;
             }
 
-            // Second pass: Apply physics and calculate smooth rank-based positions
+            // Anchor: the card the container is resting on.
+            int centerIndex = -1;
+            int centerScroll = 0;
+            {
+                float best = Float.MAX_VALUE;
+                for (int k = 0; k < childCount; k++) {
+                    View cv = recentsView.getChildAt(k);
+                    if (cv == null || !taskViewClass.isInstance(cv)) continue;
+                    float s = (int) getChildStartMethod.invoke(handler, cv);
+                    float d = Math.abs(s - scroll);
+                    if (d < best) { best = d; centerIndex = k; }
+                }
+                if (centerIndex >= 0) {
+                    centerScroll = (int) getChildStartMethod.invoke(
+                            handler, recentsView.getChildAt(centerIndex));
+                }
+            }
+
             for (int i = 0; i < childCount; i++) {
                 View child = recentsView.getChildAt(i);
                 if (child == null || !taskViewClass.isInstance(child)) continue;
 
-                Float distanceObj = (Float) XposedHelpers.getAdditionalInstanceField(child, "apple_stack_distance");
-                Float weightObj = (Float) XposedHelpers.getAdditionalInstanceField(child, "apple_layout_weight");
-                if (distanceObj == null || weightObj == null) continue;
+                int pageScroll = (int) getChildStartMethod.invoke(handler, child);
 
-                float originalDistance = distanceObj;
-                float selfWeight = weightObj;
+                // getVisualDelta(): scroll difference clamped to one container width
+                float rawDelta = pageScroll - centerScroll;
+                float normalDelta = Math.max(-measuredSize, Math.min(measuredSize, rawDelta));
+                float distance = normalDelta / Math.max(1f, pageDistance);
 
-                // Reset for gone cards
-                if (selfWeight <= 0f && (child.getVisibility() != View.VISIBLE || child.getAlpha() < 0.01f)) {
+                XposedHelpers.setAdditionalInstanceField(child, "apple_stack_distance", distance);
+                XposedHelpers.setAdditionalInstanceField(child, "apple_stack_pixel_delta", normalDelta);
+                XposedHelpers.setAdditionalInstanceField(child, "apple_stack_page_distance", pageDistance);
+
+                AxStackLayout.Transform t = AxStackLayout.compute(
+                        distance, normalDelta, pageDistance, measuredSize);
+
+                if (t == null) {
                     XposedHelpers.setAdditionalInstanceField(child, "apple_stack_offset", 0f);
-                    XposedHelpers.setAdditionalInstanceField(child, "apple_target_z", 0f);
+                    child.setAlpha(0f);
                     continue;
                 }
 
-                if (originalDistance < 0) { // Left side stacking
-                    // AxStack's AxStackLayout.getTransform, adapted to this hook:
-                    //   distance  = page index (dimensionless, e.g. -1 = one page to the left)
-                    //   stackSpacing = one card's worth of stack step in pixels
-                    //   desiredDelta = distance * stackSpacing        -> where the card should sit
-                    //   translation  = desiredDelta - pixelDelta      -> how far to nudge it
-                    // Everything below works in pixels again; only the *index* is dimensionless.
-                    float absPageIndex = Math.abs(originalDistance);
+                XposedHelpers.setAdditionalInstanceField(child, "apple_stack_offset", t.translationX);
+                // Set the absolute position here; applyTranslationX() must not add anything on top.
+                child.setTranslationX(t.translationX);
+                child.setScaleX(t.scale);
+                child.setScaleY(t.scale);
+                child.setAlpha(t.alpha);
 
-                    Float pixelDeltaObj = (Float) XposedHelpers.getAdditionalInstanceField(child, "apple_stack_pixel_delta");
-                    Float pageDistObj = (Float) XposedHelpers.getAdditionalInstanceField(child, "apple_stack_page_distance");
-                    float pixelDelta = pixelDeltaObj != null ? pixelDeltaObj : 0f;
-                    float pageDist = pageDistObj != null ? pageDistObj : measuredSize;
-
-                    float effectiveRank = 0f;
-                    float dismissPullProgress = 0f;
-
-                    for (int j = 0; j < childCount; j++) {
-                        View other = recentsView.getChildAt(j);
-                        if (other == null || other == child || !taskViewClass.isInstance(other)) continue;
-
-                        Float otherDistance = (Float) XposedHelpers.getAdditionalInstanceField(other, "apple_stack_distance");
-                        Float otherWeight = (Float) XposedHelpers.getAdditionalInstanceField(other, "apple_layout_weight");
-                        Float otherProgress = (Float) XposedHelpers.getAdditionalInstanceField(other, "apple_dismiss_progress");
-                        if (otherDistance == null || otherWeight == null || otherProgress == null) continue;
-
-                        // Only cards between us and the focus card count towards the rank.
-                        if (otherDistance > originalDistance && otherDistance < 0f && otherWeight > 0.01f) {
-                            effectiveRank += otherWeight;
-                        }
-
-                        // Cards actively being dismissed pull their neighbours along.
-                        if (otherDistance > originalDistance && otherDistance < 0f && otherProgress > 0.01f) {
-                            dismissPullProgress += (1.0f - otherWeight);
-                        }
-                    }
-
-                    // Stack step: AxStack uses primarySize * 0.23 for the card pitch.
-                    float stackSpacing = pageDist * STACK_SPACING_FACTOR;
-                    float desiredDelta = originalDistance * stackSpacing;
-                    float extraTranslation = desiredDelta - pixelDelta;
-
-                    // Dismiss pull nudges neighbours left by a fraction of the page pitch.
-                    if (dismissPullProgress > 0.01f) {
-                        float pullFade = clamp(1f - absPageIndex, 0f, 1f);
-                        extraTranslation -= dismissPullProgress * stackSpacing * pullFade;
-                    }
-
-                    // Cards stay readable for the first few pages only.
-                    boolean inRange = absPageIndex <= STACK_RANGE_PAGES;
-                    if (!inRange) {
-                        XposedHelpers.setAdditionalInstanceField(child, "apple_stack_offset", 0f);
-                        XposedHelpers.setAdditionalInstanceField(child, "apple_target_z", 0f);
-                        child.setAlpha(0f);
-                        continue;
-                    }
-
-                    float targetLerp = 1.0f;
-                    Float currentOffsetObj = (Float) XposedHelpers.getAdditionalInstanceField(child, "apple_stack_offset");
-                    float currentOffset = currentOffsetObj != null ? currentOffsetObj : 0f;
-                    float smoothedOffset = currentOffset + (extraTranslation - currentOffset) * targetLerp;
-
-                    XposedHelpers.setAdditionalInstanceField(child, "apple_stack_offset", smoothedOffset);
-
-                    // Manually trigger property update
-                    XposedHelpers.callMethod(child, "applyTranslationX");
-
-                    // Scale/alpha follow the same page index as AxStack: 1 - distance * 0.07.
-                    float scale = Math.max(0.75f, 1.0f - absPageIndex * 0.07f);
-                    child.setScaleX(scale);
-                    child.setScaleY(scale);
-                    child.setAlpha(1.0f);
-
-                    XposedHelpers.setAdditionalInstanceField(child, "apple_child_index", effectiveRank);
-                    float targetZ = 100f - effectiveRank;
-                    XposedHelpers.setAdditionalInstanceField(child, "apple_target_z", targetZ);
-                    child.setTranslationZ(targetZ);
-                } else {
-                    // Right side cards: stable anchor
-                    float dismissPullProgressRight = 0f;
-                    for (int j = 0; j < childCount; j++) {
-                        View other = recentsView.getChildAt(j);
-                        if (other == null || other == child || !taskViewClass.isInstance(other)) continue;
-                        Float otherDistance = (Float) XposedHelpers.getAdditionalInstanceField(other, "apple_stack_distance");
-                        Float otherWeight = (Float) XposedHelpers.getAdditionalInstanceField(other, "apple_layout_weight");
-                        Float otherProgress = (Float) XposedHelpers.getAdditionalInstanceField(other, "apple_dismiss_progress");
-                        if (otherDistance == null || otherWeight == null || otherProgress == null) continue;
-
-                        // If a card closer to the center is being dismissed, pull this card left.
-                         // We ONLY do this if the dismissed card is also on the right side (dist > 50).
-                         // If the center card is dismissed, only left cards should move right.
-                         if (otherDistance < originalDistance && otherDistance > 0f && otherProgress > 0.01f) {
-                             dismissPullProgressRight += (1.0f - otherWeight);
-                         }
-                    }
-
-                    float absPageIndexRight = Math.abs(originalDistance);
-
-                    Float pixelDeltaRObj = (Float) XposedHelpers.getAdditionalInstanceField(child, "apple_stack_pixel_delta");
-                    Float pageDistRObj = (Float) XposedHelpers.getAdditionalInstanceField(child, "apple_stack_page_distance");
-                    float pixelDeltaR = pixelDeltaRObj != null ? pixelDeltaRObj : 0f;
-                    float pageDistR = pageDistRObj != null ? pageDistRObj : measuredSize;
-
-                    boolean isLastChild = (i == childCount - 1);
-                    float targetZ = isLastChild ? 200f : (150f - i);
-                    XposedHelpers.setAdditionalInstanceField(child, "apple_target_z", targetZ);
-                    child.setTranslationZ(targetZ);
-
-                    // Right side mirrors the left: desired = pageIndex * stackSpacing.
-                    float stackSpacingR = pageDistR * STACK_SPACING_FACTOR;
-                    float extraTranslation = (originalDistance * stackSpacingR) - pixelDeltaR;
-                    if (dismissPullProgressRight > 0.01f) {
-                        float pullFade = clamp(1f - absPageIndexRight, 0f, 1f);
-                        extraTranslation += dismissPullProgressRight * stackSpacingR * pullFade;
-                    }
-
-                    if (absPageIndexRight > STACK_RANGE_PAGES) {
-                        child.setAlpha(0f);
-                        XposedHelpers.setAdditionalInstanceField(child, "apple_stack_offset", 0f);
-                        continue;
-                    }
-
-                    XposedHelpers.setAdditionalInstanceField(child, "apple_stack_offset", extraTranslation);
-                    XposedHelpers.callMethod(child, "applyTranslationX");
-
-                    float scale = Math.max(0.75f, 1.0f - absPageIndexRight * 0.07f);
-                    child.setScaleX(scale);
-                    child.setScaleY(scale);
-                    child.setAlpha(1.0f);
-                }
+                float targetZ = 100f + t.rank;
+                XposedHelpers.setAdditionalInstanceField(child, "apple_target_z", targetZ);
+                child.setTranslationZ(targetZ);
 
                 if (!isDismissing && dismissTranslationXField != null) {
                     try {
