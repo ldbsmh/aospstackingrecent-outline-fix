@@ -544,6 +544,14 @@ public class RecentsHook {
             }
             boolean havePageRef = !Float.isNaN(pageStartRef);
 
+            // Skip the offset pass on the first frame after entering recents: layout has not
+            // settled (scroll==0 while the current page is not yet centred), and applying the
+            // stack curve there shoves the card a full width off-screen for one frame.
+            if (havePageRef && bestGap > measuredSize * 0.25f) {
+                pageStartRef = Float.NaN;
+                havePageRef = false;
+            }
+
             // First pass: Calculate distance and weights for all cards
             for (int i = 0; i < childCount; i++) {
                 View child = recentsView.getChildAt(i);
