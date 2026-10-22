@@ -77,7 +77,7 @@ final class AxStackLayout {
         return out;
     }
 
-    private static float getTransform(float distance, float normalDelta, float reflowTranslation,
+    private static void getTransform(float distance, float normalDelta, float reflowTranslation,
             float anchorDistance, float primarySize, boolean naturalLayout, boolean rtl,
             Transform out) {
         if (distance < -TASK_PRELOAD_RANGE || distance > 4.5f) {
