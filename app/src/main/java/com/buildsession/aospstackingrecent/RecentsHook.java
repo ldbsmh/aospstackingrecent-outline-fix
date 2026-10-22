@@ -522,6 +522,28 @@ public class RecentsHook {
 
             int childCount = recentsView.getChildCount();
 
+            // Android 17 (SDK 37): getChildStart() returns the child's ABSOLUTE layout position
+            // inside the scrolling container, not an offset relative to the current page. The
+            // original code assumed it matched `scroll + measuredSize/2`, which no longer holds.
+            // Find the page the container is actually resting on and use its start as origin,
+            // otherwise every card's "distance" comes out ~1000px per page too large and gets
+            // translated right off the screen (the ghost card behind the first one).
+            float pageStartRef = Float.NaN;
+            float bestGap = Float.MAX_VALUE;
+            for (int i = 0; i < childCount; i++) {
+                View cv = recentsView.getChildAt(i);
+                if (cv == null || !taskViewClass.isInstance(cv)) continue;
+                try {
+                    float cs = (int) getChildStartMethod.invoke(handler, cv);
+                    float gap = Math.abs(cs - scroll);
+                    if (gap < bestGap) {
+                        bestGap = gap;
+                        pageStartRef = cs;
+                    }
+                } catch (Throwable ignored) {}
+            }
+            boolean havePageRef = !Float.isNaN(pageStartRef);
+
             // First pass: Calculate distance and weights for all cards
             for (int i = 0; i < childCount; i++) {
                 View child = recentsView.getChildAt(i);
@@ -530,7 +552,9 @@ public class RecentsHook {
                 int childStart = (int) getChildStartMethod.invoke(handler, child);
                 int childSize = (int) getMeasuredSizeMethod.invoke(handler, child);
                 float childCenter = childStart + childSize / 2f;
-                float distance = childCenter - center;
+                float distance = havePageRef
+                        ? (childStart - pageStartRef)
+                        : (childCenter - center);
                 float absDistance = Math.abs(distance);
 
                 XposedHelpers.setAdditionalInstanceField(child, "apple_stack_distance", distance);
